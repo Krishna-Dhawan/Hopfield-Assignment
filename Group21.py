@@ -1,111 +1,150 @@
-import numpy as np
-import random;
 import os
+import random
 import matplotlib.pyplot as plt
 
-def readpbm(filename):
-    with open(filename, 'r') as file:
-        lines = file.readlines()
+def read_pbm(filename):
+    with open(filename, 'r') as f:
+        lines = f.readlines()
     
-    width, height = 16, 16
-    data = np.array([int(pixel) for line in lines[2:] for pixel in line.split()])
-    return data.reshape((16, 16))
+    data = [[int(pixel) for pixel in line.split()] for line in lines[2:]]
+    return data
 
 def write_pbm(filename, image):
-    with open(filename, 'w') as file:
-        file.write("P1\n16 16\n")
+    with open(filename, 'w') as f:
+        f.write("P1\n16 16\n")
         for row in image:
-            file.write(row + "\n")
+            f.write(" ".join(map(str, row)) + "\n")
 
-def train(images):
-    n = 16*16
-    W = np.zeros((n, n))
-
+def train_hopfield(images):
+    num_pixels = 16 * 16
+    W = [[0 for _ in range(num_pixels)] for _ in range(num_pixels)]
+    
     for img in images:
-        pattern = img.flatten() * 2 - 1
-        W += np.outer(pattern, pattern)
-    np.fill_diagonal(W, 0)
-    return W/len(images)
-
-def load_dataset(dir):
-    images = []
-    for filename in sorted(os.listdir(dir)):
-        if filename.endswith(".pbm"):
-            images.append(readpbm(os.path.join(dir, filename)))
-    return images
+        pattern = [(pixel * 2 - 1) for row in img for pixel in row]
+        for i in range(num_pixels):
+            for j in range(num_pixels):
+                if i != j:
+                    W[i][j] += pattern[i] * pattern[j]
+    
+    return [[W[i][j] / len(images) for j in range(num_pixels)] for i in range(num_pixels)]
 
 def corrupt_flip(images, prob):
     corrupted_images = []
     for img in images:
-        for pixel in img.flatten():
-            if (random.random() <= prob):
-                pixel = 1-pixel
+        corrupted_img = [[1 - pixel if random.random() < prob else pixel for pixel in row] for row in img]
+        corrupted_images.append(corrupted_img)
     return corrupted_images
 
 def corrupt_crop(images):
     corrupted_images = []
     for img in images:
-        corrupted_img = np.zeros_like(img)
-        corrupted_img[3:13, 3:13] = img[3:13, 3:13]
+        x = random.randint(0, 6)
+        y = random.randint(0, 6)
+        corrupted_img = [[pixel if x <= i < x+10 and y <= j < y+10 else 0 for j, pixel in enumerate(row)] for i, row in enumerate(img)]
         corrupted_images.append(corrupted_img)
     return corrupted_images
 
-def correct_synchronous(images, W):
-    steps = 0
-    for img in images:
-        state = img.flatten() * 2 - 1
-        prev_state = np.zeros_like(state)
-        while not np.array_equal(state, prev_state):
-            prev_state = state.copy()
-            state = np.sign(W @ state)
-            state[state == 0] = 1
-            steps += 1
-    return steps
 
-def correct_asynchronous(images, W):
+def correct_synchronous(image, W):
+    state = [(pixel * 2 - 1) for row in image for pixel in row]
     steps = 0
-    for img in images:
-        state = img.flatten() * 2 - 1
-        prev_state = np.zeros_like(state)
-        while not np.array_equal(state, prev_state):
-            prev_state = state.copy()
-            for i in np.random.permutation(len(state)):
-                state[i] = np.sign(W[i] @ state)
-                if state[i] == 0:
-                    state[i] = 1
-            steps += 1
-    return steps
+    num_pixels = 16 * 16
+    
+    while True:
+        new_state = [1 if sum(W[i][j] * state[j] for j in range(num_pixels)) >= 0 else -1 for i in range(num_pixels)]
+        if new_state == state:
+            break
+        state = new_state
+        steps += 1
+        if steps >= 100:
+            break
+    return [[(state[i * 16 + j] + 1) // 2 for j in range(16)] for i in range(16)], steps
+
+def correct_asynchronous(image, W):
+    state = [(pixel * 2 - 1) for row in image for pixel in row]
+    steps = 0
+    num_pixels = 16 * 16
+    
+    while True:
+        prev_state = state[:]
+        for i in range(num_pixels):
+            state[i] = 1 if sum(W[i][j] * state[j] for j in range(num_pixels)) >= 0 else -1
+        if state == prev_state:
+            break
+        steps += 1
+        if steps >= 100:
+            break
+    return [[(state[i * 16 + j] + 1) // 2 for j in range(16)] for i in range(16)], steps
+
 
 def compare(original_images, corrected_images):
-    """Compares original images with corrected images and returns accuracy."""
-    matches = sum(np.array_equal(orig, corr) for orig, corr in zip(original_images, corrected_images))
+    matches = sum(1 for orig, corr in zip(original_images, corrected_images) if orig == corr)
     return matches / len(original_images)
 
-
 def main():
-    dataset = load_dataset("dataset")
-    W = train(dataset)
-    corrupted_images = corrupt_flip(dataset, 0.3)
-    corrected_sync = [correct_synchronous([img], W) for img in corrupted_images]
-    corrected_async = [correct_asynchronous([img], W) for img in corrupted_images]
+    dataset = [read_pbm(f"./dataset/{filename}") for filename in sorted(os.listdir("./dataset"))]
+    W = train_hopfield(dataset)
     
-    accuracy_sync = compare(dataset, corrected_sync)
-    accuracy_async = compare(dataset, corrected_async)
+    probabilities = range(2, 10)
+    convergence_rates_flip = []
+    steps_histogram_data = {}
     
-    print(f"Synchronous Correction Accuracy: {accuracy_sync:.2%}")
-    print(f"Asynchronous Correction Accuracy: {accuracy_async:.2%}")
+    for prob in probabilities:
+        successful_convergences = 0
+        steps_data = []
+        
+        for _ in range(20):
+            corrupted_images = corrupt_flip(dataset, prob*0.1)
+            for img, original in zip(corrupted_images, dataset):
+                corrected_sync, steps_sync = correct_synchronous(img, W)
+                corrected_async, steps_async = correct_asynchronous(img, W)
+                if corrected_sync == original:
+                    successful_convergences += 1
+                    steps_data.append(steps_sync)
+                if corrected_async == original:
+                    successful_convergences += 1
+                    steps_data.append(steps_async)
+        
+        convergence_rates_flip.append(successful_convergences / (40 * len(dataset)))
+        steps_histogram_data[prob] = steps_data
+
+    successful_convergences = [0, 0, 0, 0]
+    steps_data = []
+    for _ in range(20):
+        corrupted_images = corrupt_crop(dataset)
+        for img, original in zip(corrupted_images, dataset):
+            corrected_sync, steps_sync = correct_synchronous(img, W)
+            corrected_async, steps_async = correct_asynchronous(img, W)
+            for i in range(4):
+                if corrected_sync[i] == original[i]:
+                    successful_convergences[i] += 1
+                if corrected_async[i] == original[i]:
+                    successful_convergences[i] += 1
     
-    # Plot example of original, corrupted, and corrected images
-    fig, axes = plt.subplots(3, len(dataset), figsize=(12, 4))
-    for i, (orig, corr, fixed) in enumerate(zip(dataset, corrupted_images, corrected_sync)):
-        axes[0, i].imshow(orig, cmap="gray")
-        axes[0, i].set_title("Original")
-        axes[1, i].imshow(corr, cmap="gray")
-        axes[1, i].set_title("Corrupted")
-        axes[2, i].imshow(fixed, cmap="gray")
-        axes[2, i].set_title("Corrected")
+    plt.figure(figsize=(8, 5))
+    plt.bar([img_ for img_ in ["circle", "cross", "plus", "square"]], successful_convergences, color='blue')
+    plt.xlabel("Correct Image")
+    plt.ylabel("Converged Runs")
+    plt.title("Convergence for cropped images vs Correct Image")
     plt.show()
 
+    plt.figure(figsize=(8, 5))
+    plt.bar([str(p) for p in probabilities], convergence_rates_flip, color='blue')
+    plt.xlabel("Flip Probability (*10)")
+    plt.ylabel("Fraction of Converged Runs")
+    plt.title("Convergence Rate vs Flip Probability")
+    plt.show()
+    
+    for prob, steps in steps_histogram_data.items():
+        if steps:
+            plt.figure(figsize=(8, 5))
+            plt.hist(steps, bins=range(1, max(steps)+2), color='green', edgecolor='black', alpha=0.7)
+            plt.xlabel("Number of Steps to Convergence")
+            plt.ylabel("Frequency")
+            plt.title(f"Histogram of Steps to Convergence for p={prob}")
+            plt.show()
+        else:
+            print(f"No successful converges for p={prob*0.1}")
 
 if __name__ == "__main__":
     main()
