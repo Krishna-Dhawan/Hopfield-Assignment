@@ -184,8 +184,15 @@ def main():
     plt.figure(figsize=(8, 5))
     plt.bar([("0." + str(p)) for p in probabilities], convergence_rates_flip, color='blue')
     plt.xlabel("Flip Probability")
-    plt.ylabel("Fraction of Converged Runs")
+    plt.ylabel("Fraction of Correctly Converged Runs")
     plt.title("Convergence Rate vs Flip Probability")
+    plt.show()
+
+    plt.figure(figsize=(8, 5))
+    plt.bar([("0." + str(p)) for p in probabilities], [1-val for val in convergence_rates_flip], color='blue')
+    plt.xlabel("Flip Probability")
+    plt.ylabel("Fraction of incorrectly/non-Converged Runs")
+    plt.title("Rate vs Flip Probability")
     plt.show()
 
     # plot histograms for no. steps to convergence for each prob. of flip
